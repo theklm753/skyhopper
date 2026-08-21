@@ -124,7 +124,9 @@ input[type=submit] { width:10mm;}
 </div>
 <p class="first_line_controls" >
 	<span class="only_full"><button class="ui_but tr" onclick="align();">Align</button></span>
+    <span class="only_full"><button class="ui_but tr" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">BLE</button></span>
 	<span class="only_tiny"><button class="incdec_but" onclick="align();">&#x25ce;</button></span>
+    <span class="only_tiny"><button class="incdec_but" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">B</button></span>
     <span id="countdown"></span>
     <span class="only_tiny" id="alignment_tiny"></span><span class="only_full" id="alignment"></span> 
 	<button class="comp_but nocompass_background" id="nocompass_button" style="display:none">&nbsp;</button>
@@ -2368,6 +2370,98 @@ function configSaveMag()
     }
 
 }
+
+// --- DÉBUT CODE WITMOTION BLE ---
+const WIT_SERVICES = [
+    "0000ffe5-0000-1000-8000-00805f9a34fb",
+    "00001800-0000-1000-8000-00805f9b34fb",
+    "00001801-0000-1000-8000-00805f9b34fb"
+];
+
+async function connectWitMotion() {
+    if (!navigator.bluetooth) {
+        alert("Web Bluetooth non supporté. Veuillez utiliser Chrome/Edge sur Android ou Mac/PC.");
+        return;
+    }
+
+    try {
+        document.getElementById('orient').innerHTML = "Recherche capteur BLE...";
+        
+        const device = await navigator.bluetooth.requestDevice({
+            filters: [{ namePrefix: "WT" }],
+            optionalServices: WIT_SERVICES
+        });
+
+        device.addEventListener('gattserverdisconnected', () => {
+            document.getElementById('orient').innerHTML = "BLE Déconnecté";
+        });
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService("0000ffe5-0000-1000-8000-00805f9a34fb");
+        const characteristics = await service.getCharacteristics();
+        
+        let notifyChar = null;
+
+        for (const char of characteristics) {
+            if (char.properties.notify || char.properties.indicate) notifyChar = char;
+        }
+
+        if (!notifyChar) throw new Error("Caractéristique notifiable introuvable.");
+
+        await notifyChar.startNotifications();
+        notifyChar.addEventListener('characteristicvaluechanged', handleWitData);
+
+        document.getElementById('orient').innerHTML = "Capteur BLE Connecté !";
+        
+        // ⚠️ Dès qu'on connecte le capteur BLE, on désactive la lecture des capteurs internes du smartphone !
+        window.removeEventListener("deviceorientationabsolute", deviceOrientationListener);
+        window.removeEventListener("deviceorientation", gyroListener);
+        window.removeEventListener("deviceorientation", deviceOrientationListenerIOS);
+
+    } catch (error) {
+        console.error(error);
+        document.getElementById('orient').innerHTML = "Erreur BLE : " + error.message;
+    }
+}
+
+function handleWitData(event) {
+    const data = new Uint8Array(event.target.value.buffer);
+
+    for (let i = 0; i < data.length - 1; i++) {
+        if (data[i] === 0x55) {
+            const type = data[i + 1];
+
+            // Trame standard BLE (0x61) -> Angles
+            if (type === 0x61 && (i + 19) < data.length) {
+                // Formule doc: (Raw / 32768) * 180 deg
+                const roll  = (readInt16LE(data, i + 14) / 32768.0) * 180.0;
+                const pitch = (readInt16LE(data, i + 16) / 32768.0) * 180.0;
+                const yaw   = (readInt16LE(data, i + 18) / 32768.0) * 180.0;
+
+                // On injecte les valeurs directement dans l'état interne d'AstroHopper
+                gdata.alpha_gyro = yaw;
+                gdata.beta = pitch;
+                gdata.gamma = roll;
+                
+                if (global_use_compass) gdata.alpha = yaw;
+                gdata.compass_alpha = yaw;
+
+                // Mise à jour de l'affichage de debug en bas d'écran
+                formatValue("ang_a", yaw);
+                formatValue("ang_b", pitch);
+                formatValue("ang_g", roll);
+                formatValue("ang_c", yaw);
+            }
+        }
+    }
+}
+
+function readInt16LE(buffer, offset) {
+    let val = buffer[offset] | (buffer[offset + 1] << 8);
+    if (val & 0x8000) val |= ~0xFFFF;
+    return val;
+}
+// --- FIN CODE WITMOTION BLE ---
 
 function setupConfigurableElements()
 {
