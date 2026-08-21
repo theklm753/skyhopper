@@ -22,6 +22,41 @@ button { border-radius:2mm; height:10mm; font-size:5mm ; text-align:center; vert
 .only_full { display : inline }
 .only_tiny_b { display : none }
 
+/* Encadré capteur WitMotion */
+.witmotion_status {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 8px 12px;
+    background-color: #1e1e1e;
+    border: 2px solid #2196F3;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 4mm;
+    text-align: center;
+    min-width: 60px;
+}
+
+.witmotion_status.connected {
+    border-color: #4caf50;
+    color: #4caf50;
+}
+
+.witmotion_status.disconnected {
+    border-color: #f44336;
+    color: #aaa;
+}
+
+.witmotion_value {
+    font-weight: bold;
+    font-size: 5mm;
+}
+
+.witmotion_label {
+    font-size: 3mm;
+    color: #888;
+    text-transform: uppercase;
+}
+	
 #search_field_main_ok {
     position:absolute;
     top:31mm;
@@ -123,10 +158,24 @@ input[type=submit] { width:10mm;}
     <button id="search_field_main_ok" ></button>
 </div>
 <p class="first_line_controls" >
-	<span class="only_full"><button class="ui_but tr" onclick="align();">Align</button></span>
-    <span class="only_full"><button class="ui_but tr" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">BLE</button></span>
-	<span class="only_tiny"><button class="incdec_but" onclick="align();">&#x25ce;</button></span>
-    <span class="only_tiny"><button class="incdec_but" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">B</button></span>
+	<span class="only_full">
+    <button class="ui_but tr" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">BLE</button>
+    <span id="witmotion_status" class="witmotion_status disconnected">
+        <div class="witmotion_label">Capteur</div>
+        <div class="witmotion_value">
+            🔋 <span id="witmotion_batt">--</span>%<br/>
+            🌡️ <span id="witmotion_temp">--</span>°C
+        </div>
+    </span>
+</span>
+<span class="only_tiny">
+    <button class="incdec_but" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">B</button>
+    <span id="witmotion_status_tiny" class="witmotion_status disconnected" style="display:inline-block; font-size:3mm; min-width:40px;">
+        <div class="witmotion_value" style="font-size:4mm;">
+            <span id="witmotion_batt_tiny">--</span>% / <span id="witmotion_temp_tiny">--</span>°
+        </div>
+    </span>
+</span>
     <span id="countdown"></span>
     <span class="only_tiny" id="alignment_tiny"></span><span class="only_full" id="alignment"></span> 
 	<button class="comp_but nocompass_background" id="nocompass_button" style="display:none">&nbsp;</button>
@@ -2372,11 +2421,183 @@ function configSaveMag()
 }
 
 // --- DÉBUT CODE WITMOTION BLE ---
+// ============ WITMOTION SENSOR INTEGRATION ============
+
 const WIT_SERVICES = [
     "0000ffe5-0000-1000-8000-00805f9a34fb",
     "00001800-0000-1000-8000-00805f9b34fb",
     "00001801-0000-1000-8000-00805f9b34fb"
 ];
+
+let witmotion_writeChar = null;
+let witmotion_battInterval = null;
+let witmotion_device = null;
+
+function updateWitMotionDisplay(battery, temperature) {
+    // Mise à jour version "full"
+    document.getElementById('witmotion_batt').innerText = battery;
+    document.getElementById('witmotion_temp').innerText = temperature;
+    
+    // Mise à jour version "tiny"
+    document.getElementById('witmotion_batt_tiny').innerText = battery;
+    document.getElementById('witmotion_temp_tiny').innerText = temperature.split('.')[0]; // Sans décimale
+}
+
+function setWitMotionConnected(connected) {
+    const status = document.getElementById('witmotion_status');
+    const statusTiny = document.getElementById('witmotion_status_tiny');
+    
+    if (connected) {
+        status.classList.remove('disconnected');
+        status.classList.add('connected');
+        statusTiny.classList.remove('disconnected');
+        statusTiny.classList.add('connected');
+    } else {
+        status.classList.add('disconnected');
+        status.classList.remove('connected');
+        statusTiny.classList.add('disconnected');
+        statusTiny.classList.remove('connected');
+        updateWitMotionDisplay('--', '--');
+    }
+}
+
+async function sendWitMotionCmd(regHex) {
+    if (!witmotion_writeChar) return;
+    try {
+        const cmd = new Uint8Array([0xFF, 0xAA, 0x27, regHex, 0x00]);
+        await witmotion_writeChar.writeValue(cmd);
+    } catch (e) {
+        console.warn(`Erreur envoi registre WitMotion 0x${regHex.toString(16)}:`, e);
+    }
+}
+
+function handleWitMotionData(event) {
+    const data = new Uint8Array(event.target.value.buffer);
+    
+    for (let i = 0; i < data.length - 1; i++) {
+        if (data[i] === 0x55) {
+            const type = data[i + 1];
+            
+            // Trame réponse Registre (0x71)
+            if (type === 0x71 && (i + 4) < data.length) {
+                const reg = data[i + 2] | (data[i + 3] << 8);
+                
+                // Registre 0x64 = Batterie
+                if (reg === 0x64) {
+                    const vRaw = readWitMotionInt16LE(data, i + 4);
+                    updateBatteryWitMotion(vRaw);
+                }
+                
+                // Registre 0x40 = Température
+                if (reg === 0x40) {
+                    const tempRaw = readWitMotionInt16LE(data, i + 4);
+                    const tempValue = (tempRaw / 100.0).toFixed(1);
+                    document.getElementById('witmotion_temp').innerText = tempValue;
+                    document.getElementById('witmotion_temp_tiny').innerText = tempValue.split('.')[0];
+                }
+            }
+        }
+    }
+}
+
+function updateBatteryWitMotion(vRaw) {
+    if (vRaw <= 0) return;
+    let pct = 0;
+    
+    if (vRaw >= 413) pct = 100;
+    else if (vRaw >= 406) pct = 95;
+    else if (vRaw >= 402) pct = 90;
+    else if (vRaw >= 397) pct = 85;
+    else if (vRaw >= 393) pct = 80;
+    else if (vRaw >= 390) pct = 75;
+    else if (vRaw >= 386) pct = 70;
+    else if (vRaw >= 384) pct = 65;
+    else if (vRaw >= 381) pct = 60;
+    else if (vRaw >= 376) pct = 55;
+    else if (vRaw >= 373) pct = 50;
+    else if (vRaw >= 370) pct = 45;
+    else if (vRaw >= 368) pct = 40;
+    else if (vRaw >= 366) pct = 35;
+    else if (vRaw >= 364) pct = 30;
+    else if (vRaw >= 362) pct = 25;
+    else if (vRaw >= 359) pct = 20;
+    else if (vRaw >= 355) pct = 15;
+    else if (vRaw >= 350) pct = 10;
+    else if (vRaw >= 342) pct = 5;
+    else pct = 0;
+    
+    document.getElementById('witmotion_batt').innerText = pct;
+    document.getElementById('witmotion_batt_tiny').innerText = pct;
+}
+
+function readWitMotionInt16LE(buffer, offset) {
+    let val = buffer[offset] | (buffer[offset + 1] << 8);
+    if (val & 0x8000) val |= ~0xFFFF;
+    return val;
+}
+
+async function connectWitMotion() {
+    if (!navigator.bluetooth) {
+        alert("Web Bluetooth non supporté.");
+        return;
+    }
+    
+    try {
+        showStatus("WitMotion: Recherche du capteur...");
+        
+        witmotion_device = await navigator.bluetooth.requestDevice({
+            filters: [{ namePrefix: "WT" }],
+            optionalServices: WIT_SERVICES
+        });
+        
+        showStatus("WitMotion: Connexion...");
+        witmotion_device.addEventListener('gattserverdisconnected', () => {
+            setWitMotionConnected(false);
+            showStatus("WitMotion: Déconnecté");
+            if (witmotion_battInterval) clearInterval(witmotion_battInterval);
+        });
+        
+        const server = await witmotion_device.gatt.connect();
+        showStatus("WitMotion: Accès au service...");
+        
+        const service = await server.getPrimaryService("0000ffe5-0000-1000-8000-00805f9a34fb");
+        const characteristics = await service.getCharacteristics();
+        
+        let notifyChar = null;
+        
+        for (const char of characteristics) {
+            if (char.properties.notify || char.properties.indicate) notifyChar = char;
+            if (char.properties.write || char.properties.writeWithoutResponse) witmotion_writeChar = char;
+        }
+        
+        if (!notifyChar) throw new Error("Caractéristique notifiable introuvable.");
+        
+        await notifyChar.startNotifications();
+        notifyChar.addEventListener('characteristicvaluechanged', handleWitMotionData);
+        
+        if (witmotion_writeChar) {
+            await new Promise(r => setTimeout(r, 300));
+            await sendWitMotionCmd(0x40); // Température
+            
+            await new Promise(r => setTimeout(r, 200));
+            await sendWitMotionCmd(0x64); // Batterie
+            
+            // Rafraîchir toutes les 10 secondes
+            witmotion_battInterval = setInterval(async () => {
+                await sendWitMotionCmd(0x40);
+                await sendWitMotionCmd(0x64);
+            }, 10000);
+        }
+        
+        setWitMotionConnected(true);
+        showStatus("WitMotion: Connecté !");
+        
+    } catch (error) {
+        console.error(error);
+        showStatus("WitMotion: Erreur " + error.message);
+        setWitMotionConnected(false);
+    }
+}
 
 async function connectWitMotion() {
     if (!navigator.bluetooth) {
