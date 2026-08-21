@@ -158,8 +158,8 @@ input[type=submit] { width:10mm;}
     <button id="search_field_main_ok" ></button>
 </div>
 <p class="first_line_controls" >
-	<span class="only_full">
-    <button class="ui_but tr" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">BLE</button>
+	<span class="only_full"><button class="ui_but tr" onclick="align();">Align</button></span>
+    <span class="only_full"><button class="ui_but tr" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">BLE</button></span>
     <span id="witmotion_status" class="witmotion_status disconnected">
         <div class="witmotion_label">Capteur</div>
         <div class="witmotion_value">
@@ -168,8 +168,8 @@ input[type=submit] { width:10mm;}
         </div>
     </span>
 </span>
-<span class="only_tiny">
-    <button class="incdec_but" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">B</button>
+<span class="only_tiny"><button class="incdec_but" onclick="align();">&#x25ce;</button></span>
+    <span class="only_tiny"><button class="incdec_but" style="border-color: #2196F3; color: #2196F3;" onclick="connectWitMotion();">B</button></span>
     <span id="witmotion_status_tiny" class="witmotion_status disconnected" style="display:inline-block; font-size:3mm; min-width:40px;">
         <div class="witmotion_value" style="font-size:4mm;">
             <span id="witmotion_batt_tiny">--</span>% / <span id="witmotion_temp_tiny">--</span>°
